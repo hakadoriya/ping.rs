@@ -1,0 +1,18 @@
+[package]
+name = "pingrs-cli"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "CLI for pingrs - A pure Rust ICMP ping utility"
+keywords = ["ping", "icmp", "network", "cli"]
+categories = ["command-line-utilities", "network-programming"]
+
+[dependencies]
+pingrs = { path = "../pingrs" }
+ctrlc = "3.4"
+
+[[bin]]
+name = "ping"
+path = "src/main.rs"

@@ -1,0 +1,18 @@
+[package]
+name = "pingrs"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "A pure Rust ICMP ping library"
+keywords = ["ping", "icmp", "network", "raw-socket"]
+categories = ["network-programming"]
+
+[dependencies]
+libc.workspace = true
+socket2.workspace = true
+
+[lib]
+name = "pingrs"
+path = "src/lib.rs"
