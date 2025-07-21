@@ -131,6 +131,37 @@ impl IcmpSocket {
 
         // チェックサムを検証
         if !packet.verify_checksum() {
+            // デバッグ: 受信したICMPデータを確認
+            eprintln!("\n=== Checksum Error Debug ===");
+            eprintln!("ICMP Type: {} ({})", packet.header.icmp_type, 
+                if packet.header.icmp_type == 0 { "Echo Reply" } 
+                else if packet.header.icmp_type == 8 { "Echo Request" } 
+                else { "Other" });
+            eprintln!("ICMP Code: {}", packet.header.code);
+            eprintln!("Identifier: 0x{:04x}", packet.header.identifier);
+            eprintln!("Sequence: {}", packet.header.sequence);
+            eprintln!("Checksum in packet: 0x{:04x}", packet.header.checksum);
+            
+            // チェックサムを0にしてから再計算
+            let mut test_bytes = Vec::with_capacity(8 + packet.payload.len());
+            let mut test_header = packet.header;
+            test_header.checksum = 0;
+            test_bytes.extend_from_slice(&test_header.to_bytes());
+            test_bytes.extend_from_slice(&packet.payload);
+            let calculated = crate::checksum::calculate(&test_bytes);
+            eprintln!("Calculated checksum: 0x{:04x}", calculated);
+            
+            // 全体のチェックサム
+            let mut full_bytes = Vec::with_capacity(8 + packet.payload.len());
+            full_bytes.extend_from_slice(&packet.header.to_bytes());
+            full_bytes.extend_from_slice(&packet.payload);
+            let verify_result = crate::checksum::calculate(&full_bytes);
+            eprintln!("Verify result (should be 0): 0x{:04x}", verify_result);
+            
+            eprintln!("Payload size: {} bytes", packet.payload.len());
+            eprintln!("First 32 bytes of ICMP: {:02x?}", &icmp_data[..icmp_data.len().min(32)]);
+            eprintln!("==========================\n");
+            
             return Err(PingError::InvalidPacket("Invalid checksum".to_string()));
         }
 
@@ -152,17 +183,89 @@ impl IcmpSocket {
         buffer_size: usize,
     ) -> Result<(IcmpPacket, SocketAddr)> {
         loop {
-            let (packet, addr) = self.recv_from(buffer_size)?;
+            // チェックサム検証をせずにパケットを受信
+            let (packet, addr) = self.recv_from_without_verify(buffer_size)?;
 
             // Echo Reply かつ期待する ID/Seq であることを確認
             if packet.header.icmp_type == IcmpType::EchoReply as u8
                 && packet.header.identifier == expected_identifier
                 && packet.header.sequence == expected_sequence
             {
+                // Echo Reply の場合のみチェックサムを検証
+                if !packet.verify_checksum() {
+                    // デバッグ: 受信したICMPデータを確認
+                    eprintln!("\n=== Checksum Error Debug (Echo Reply) ===");
+                    eprintln!("Identifier: 0x{:04x}", packet.header.identifier);
+                    eprintln!("Sequence: {}", packet.header.sequence);
+                    eprintln!("Checksum in packet: 0x{:04x}", packet.header.checksum);
+                    
+                    // チェックサムを0にしてから再計算
+                    let mut test_bytes = Vec::with_capacity(8 + packet.payload.len());
+                    let mut test_header = packet.header;
+                    test_header.checksum = 0;
+                    test_bytes.extend_from_slice(&test_header.to_bytes());
+                    test_bytes.extend_from_slice(&packet.payload);
+                    let calculated = crate::checksum::calculate(&test_bytes);
+                    eprintln!("Calculated checksum: 0x{:04x}", calculated);
+                    eprintln!("==========================\n");
+                    
+                    return Err(PingError::InvalidPacket("Invalid checksum".to_string()));
+                }
                 return Ok((packet, addr));
             }
             // それ以外のパケットは無視して次を待つ
         }
+    }
+
+    /// ICMP パケットを受信（チェックサム検証なし）
+    fn recv_from_without_verify(&self, buffer_size: usize) -> Result<(IcmpPacket, SocketAddr)> {
+        let mut buffer = vec![MaybeUninit::uninit(); buffer_size];
+        let (size, addr) = self.socket.recv_from(&mut buffer)?;
+
+        if size == 0 {
+            return Err(PingError::InvalidPacket(
+                "Empty packet received".to_string(),
+            ));
+        }
+
+        // MaybeUninit<u8> を u8 に変換
+        let buffer: Vec<u8> = buffer
+            .into_iter()
+            .take(size)
+            .map(|b| unsafe { b.assume_init() })
+            .collect();
+
+        // IPv4 の場合、IP ヘッダーをスキップする必要がある場合がある
+        // (OS によって動作が異なる: Linux は IP ヘッダーを含む、macOS は含まない)
+        let icmp_start = if !self.is_ipv6 && buffer.len() >= 20 {
+            // IP ヘッダーの可能性をチェック
+            let version = (buffer[0] >> 4) & 0xf;
+            if version == 4 {
+                // IPv4 ヘッダーが存在する
+                let ihl = (buffer[0] & 0xf) as usize;
+                ihl * 4 // IHL は 32 ビット単位
+            } else {
+                0
+            }
+        } else {
+            0
+        };
+
+        if icmp_start >= buffer.len() {
+            return Err(PingError::InvalidPacket(
+                "Packet too small after IP header".to_string(),
+            ));
+        }
+
+        let icmp_data = &buffer[icmp_start..];
+        let packet = IcmpPacket::from_bytes(icmp_data)?;
+
+        // SockAddr を SocketAddr に変換
+        let socket_addr = addr
+            .as_socket()
+            .ok_or_else(|| PingError::InvalidPacket("Invalid socket address".to_string()))?;
+
+        Ok((packet, socket_addr))
     }
 }
 

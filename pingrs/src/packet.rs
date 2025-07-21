@@ -112,13 +112,15 @@ impl IcmpPacket {
     pub fn to_bytes(&mut self) -> Vec<u8> {
         // チェックサムフィールドを 0 にリセット
         self.header.checksum = 0;
-        let bytes = self.to_bytes_without_checksum();
+        let mut bytes = self.to_bytes_without_checksum();
 
         // チェックサムを計算
         self.header.checksum = crate::checksum::calculate(&bytes);
 
-        // 最終的なバイト配列を生成
-        self.to_bytes_without_checksum()
+        // チェックサムをバイト配列に書き込む
+        bytes[2..4].copy_from_slice(&self.header.checksum.to_be_bytes());
+
+        bytes
     }
 
     /// バイト配列からデシリアライズ
@@ -137,7 +139,10 @@ impl IcmpPacket {
 
     /// チェックサムを検証
     pub fn verify_checksum(&self) -> bool {
-        let bytes = self.to_bytes_without_checksum();
+        // 受信したパケットの全バイト（チェックサムを含む）で検証
+        let mut bytes = Vec::with_capacity(8 + self.payload.len());
+        bytes.extend_from_slice(&self.header.to_bytes());
+        bytes.extend_from_slice(&self.payload);
         crate::checksum::verify(&bytes)
     }
 }
